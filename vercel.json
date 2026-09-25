@@ -1,7 +1,14 @@
 {
+  "version": 2,
   "functions": {
     "main.py": {
-      "runtime": "python3.12"
+      "runtime": "@vercel/python@4.6.0"
     }
-  }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ]
 }
