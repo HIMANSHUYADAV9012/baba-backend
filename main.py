@@ -40,7 +40,7 @@ FRONTEND_URL = os.getenv(
 
 app = FastAPI(
     title="AI Baba – Fast AI Scanner",
-    version="2.0"
+    version="2.1"
 )
 
 
@@ -50,10 +50,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-
-    # Production me apne actual domain ko yahan .env se set karna
     allow_origins=["*"],
-
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,6 +65,9 @@ class ProfileData(BaseModel):
     username: str
     name: str
     bio: str
+    followers: int = 0
+    following: int = 0
+    posts: int = 0
 
 
 # =========================================================
@@ -87,14 +87,16 @@ PROFILE:
 Naam: {data.name}
 Username: {data.username}
 Bio: {data.bio}
+Followers: {data.followers}
+Following: {data.following}
+Posts: {data.posts}
 
 ==================================================
 IMPORTANT PERSONALITY RULE
 ==================================================
 
-Profile ke sirf username, naam aur bio ko dekhkar
+Profile ke sirf username, naam, bio aur stats ko dekhkar
 entertaining "vibe analysis" karo.
-
 
 In words ka use karo:
 "lagta hai", "vibe aa rahi hai", "bio se feel hota hai",
@@ -245,6 +247,7 @@ IMPORTANT OUTPUT RULES
 - Kisi bhi assumption ko confirmed fact ki tarah mat likho.
 """
 
+
 # =========================================================
 # COMMON HEADERS
 # =========================================================
@@ -254,10 +257,7 @@ def get_headers():
     return {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-
-        # OpenRouter analytics ke liye
         "HTTP-Referer": FRONTEND_URL,
-
         "X-Title": "AI Baba Scanner"
     }
 
@@ -278,21 +278,18 @@ async def generate_report(data: ProfileData):
             "report": "Baba ki chabi (.env API key) nahi mili 😅"
         }
 
-
     # -----------------------------------------------------
     # INPUT CLEANING
     # -----------------------------------------------------
 
-    username = data.username.strip()[:100]
-    name = data.name.strip()[:100]
-    bio = data.bio.strip()[:500]
-
     clean_data = ProfileData(
-        username=username,
-        name=name,
-        bio=bio
+        username=data.username.strip()[:100],
+        name=data.name.strip()[:100],
+        bio=data.bio.strip()[:500],
+        followers=data.followers or 0,
+        following=data.following or 0,
+        posts=data.posts or 0
     )
-
 
     # -----------------------------------------------------
     # PROMPT
@@ -300,31 +297,22 @@ async def generate_report(data: ProfileData):
 
     prompt = build_prompt(clean_data)
 
-
     # -----------------------------------------------------
     # PAYLOAD
     # -----------------------------------------------------
 
     payload = {
         "model": OPENROUTER_MODEL,
-
         "messages": [
             {
                 "role": "user",
                 "content": prompt
             }
         ],
-
-        # Creativity controlled
         "temperature": 0.7,
-
-        # Output ko unnecessarily bada hone se rokta hai
         "max_tokens": 450,
-
-        # Model ko extra unnecessary output se rokne ke liye
         "stream": False
     }
-
 
     # -----------------------------------------------------
     # REQUEST
@@ -339,9 +327,9 @@ async def generate_report(data: ProfileData):
             pool=5.0
         )
 
+        # ⭐ http2=True hata diya (h2 package missing tha)
         async with httpx.AsyncClient(
-            timeout=timeout,
-            http2=True
+            timeout=timeout
         ) as client:
 
             response = await client.post(
@@ -349,7 +337,6 @@ async def generate_report(data: ProfileData):
                 headers=get_headers(),
                 json=payload
             )
-
 
         # -------------------------------------------------
         # HTTP ERROR
@@ -373,9 +360,8 @@ async def generate_report(data: ProfileData):
                     "Baba ka AI connection thoda slow ho gaya 😅 "
                     "Thodi der baad dobara try karo."
                 ),
-                "error": error_data
+                "error": str(error_data)
             }
-
 
         # -------------------------------------------------
         # RESPONSE JSON
@@ -387,7 +373,6 @@ async def generate_report(data: ProfileData):
             "OPENROUTER MODEL:",
             result.get("model", OPENROUTER_MODEL)
         )
-
 
         # -------------------------------------------------
         # SAFETY CHECK
@@ -404,7 +389,6 @@ async def generate_report(data: ProfileData):
                 )
             }
 
-
         # -------------------------------------------------
         # EXTRACT REPORT
         # -------------------------------------------------
@@ -415,7 +399,6 @@ async def generate_report(data: ProfileData):
             .get("content", "")
         )
 
-
         if not report:
 
             return {
@@ -425,15 +408,10 @@ async def generate_report(data: ProfileData):
                 )
             }
 
-
         return {
             "report": report,
-            "model": result.get(
-                "model",
-                OPENROUTER_MODEL
-            )
+            "model": result.get("model", OPENROUTER_MODEL)
         }
-
 
     # -----------------------------------------------------
     # TIMEOUT
@@ -450,17 +428,13 @@ async def generate_report(data: ProfileData):
             )
         }
 
-
     # -----------------------------------------------------
     # CONNECTION ERROR
     # -----------------------------------------------------
 
     except httpx.RequestError as e:
 
-        print(
-            "OPENROUTER REQUEST ERROR:",
-            str(e)
-        )
+        print("OPENROUTER REQUEST ERROR:", str(e))
 
         return {
             "report": (
@@ -468,17 +442,13 @@ async def generate_report(data: ProfileData):
             )
         }
 
-
     # -----------------------------------------------------
     # UNKNOWN ERROR
     # -----------------------------------------------------
 
     except Exception as e:
 
-        print(
-            "UNKNOWN ERROR:",
-            str(e)
-        )
+        print("UNKNOWN ERROR:", str(e))
 
         return {
             "report": (
@@ -490,18 +460,6 @@ async def generate_report(data: ProfileData):
 # =========================================================
 # 🚀 STREAMING VERSION
 # =========================================================
-#
-# Is endpoint ka biggest benefit:
-#
-# Normal:
-# Request → wait → complete report
-#
-# Streaming:
-# Request → response ke tokens immediately frontend ko
-#
-# Isliye user ko waiting kam feel hogi.
-#
-# =========================================================
 
 @app.post("/generate-report-stream")
 async def generate_report_stream(data: ProfileData):
@@ -509,14 +467,12 @@ async def generate_report_stream(data: ProfileData):
     if not OPENROUTER_API_KEY:
 
         async def key_error():
-
             yield "Baba ki API key missing hai 😅"
 
         return StreamingResponse(
             key_error(),
             media_type="text/plain"
         )
-
 
     # -----------------------------------------------------
     # CLEAN INPUT
@@ -525,12 +481,13 @@ async def generate_report_stream(data: ProfileData):
     clean_data = ProfileData(
         username=data.username.strip()[:100],
         name=data.name.strip()[:100],
-        bio=data.bio.strip()[:500]
+        bio=data.bio.strip()[:500],
+        followers=data.followers or 0,
+        following=data.following or 0,
+        posts=data.posts or 0
     )
 
-
     prompt = build_prompt(clean_data)
-
 
     # -----------------------------------------------------
     # STREAM PAYLOAD
@@ -538,22 +495,16 @@ async def generate_report_stream(data: ProfileData):
 
     payload = {
         "model": OPENROUTER_MODEL,
-
         "messages": [
             {
                 "role": "user",
                 "content": prompt
             }
         ],
-
         "temperature": 0.7,
-
         "max_tokens": 450,
-
-        # ⭐ IMPORTANT
         "stream": True
     }
-
 
     # -----------------------------------------------------
     # STREAM GENERATOR
@@ -570,9 +521,9 @@ async def generate_report_stream(data: ProfileData):
 
         try:
 
+            # ⭐ http2=True hata diya
             async with httpx.AsyncClient(
-                timeout=timeout,
-                http2=True
+                timeout=timeout
             ) as client:
 
                 async with client.stream(
@@ -581,7 +532,6 @@ async def generate_report_stream(data: ProfileData):
                     headers=get_headers(),
                     json=payload
                 ) as response:
-
 
                     # -------------------------------------
                     # ERROR
@@ -604,7 +554,6 @@ async def generate_report_stream(data: ProfileData):
 
                         return
 
-
                     # -------------------------------------
                     # READ STREAM
                     # -------------------------------------
@@ -614,99 +563,47 @@ async def generate_report_stream(data: ProfileData):
                         if not line:
                             continue
 
-
-                        # OpenRouter SSE format:
-                        #
-                        # data: {...}
-                        #
-
                         if not line.startswith("data:"):
                             continue
 
+                        raw_data = line[len("data:"):].strip()
 
-                        raw_data = line[
-                            len("data:"):
-                        ].strip()
-
-
-                        # Stream finished
                         if raw_data == "[DONE]":
                             break
 
-
                         try:
-
-                            chunk = json.loads(
-                                raw_data
-                            )
-
+                            chunk = json.loads(raw_data)
                         except json.JSONDecodeError:
-
                             continue
 
-
-                        # ---------------------------------
-                        # GET TOKEN
-                        # ---------------------------------
-
-                        choices = chunk.get(
-                            "choices",
-                            []
-                        )
+                        choices = chunk.get("choices", [])
 
                         if not choices:
                             continue
 
-
-                        delta = choices[0].get(
-                            "delta",
-                            {}
-                        )
-
-                        content = delta.get(
-                            "content"
-                        )
-
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content")
 
                         if content:
-
                             yield content
-
 
         except httpx.TimeoutException:
 
-            print(
-                "STREAM TIMEOUT"
-            )
+            print("STREAM TIMEOUT")
 
-            yield (
-                "\n\nBaba ka connection slow ho gaya 😅"
-            )
-
+            yield "\n\nBaba ka connection slow ho gaya 😅"
 
         except httpx.RequestError as e:
 
-            print(
-                "STREAM REQUEST ERROR:",
-                str(e)
-            )
+            print("STREAM REQUEST ERROR:", str(e))
 
-            yield (
-                "\n\nBaba server se connection toot gaya 😅"
-            )
-
+            yield "\n\nBaba server se connection toot gaya 😅"
 
         except Exception as e:
 
-            print(
-                "STREAM UNKNOWN ERROR:",
-                str(e)
-            )
+            print("STREAM UNKNOWN ERROR:", str(e))
 
-            yield (
-                "\n\nBaba ki tapasya interrupt ho gayi 😅"
-            )
-
+            yield "\n\nBaba ki tapasya interrupt ho gayi 😅"
 
     # -----------------------------------------------------
     # RETURN STREAM
@@ -715,7 +612,6 @@ async def generate_report_stream(data: ProfileData):
     return StreamingResponse(
         generate(),
         media_type="text/plain; charset=utf-8",
-
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no"
@@ -743,7 +639,5 @@ async def health():
     return {
         "status": "healthy",
         "model": OPENROUTER_MODEL,
-        "api_key_configured": bool(
-            OPENROUTER_API_KEY
-        )
+        "api_key_configured": bool(OPENROUTER_API_KEY)
     }
